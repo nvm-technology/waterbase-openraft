@@ -117,10 +117,18 @@ where
                     let _ = tx.send(Ok(snapshot_data));
                     // No response to RaftCore
                 }
-                CommandPayload::Apply { entries } => {
-                    let resp = self.apply(entries).await?;
-                    let res = CommandResult::new(cmd.seq, Ok(Response::Apply(resp)));
-                    let _ = self.resp_tx.send(Notify::sm(res));
+                CommandPayload::Apply { entries, callback } => {
+                    let resp = self.apply(entries).await;
+                    if let Some(callback) = callback {
+                        // RaftCore is waiting for this bounded chunk before it reads the next
+                        // chunk. Returning through a oneshot prevents the unbounded command
+                        // channel from retaining a whole committed gap in memory.
+                        let _ = callback.send(resp);
+                    } else {
+                        let resp = resp?;
+                        let res = CommandResult::new(cmd.seq, Ok(Response::Apply(resp)));
+                        let _ = self.resp_tx.send(Notify::sm(res));
+                    }
                 }
             };
         }

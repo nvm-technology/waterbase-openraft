@@ -22,7 +22,9 @@ chrono          = { workspace = true }
 clap            = { workspace = true }
 derive_more     = { workspace = true }
 futures         = { workspace = true }
-openraft-macros = { path = "../macros", version = "0.9.6" }
+# Khepri vendors only the RaftCore apply-range fix. Keep the published macro dependency instead
+# of pulling the entire OpenRaft workspace into the downstream application.
+openraft-macros = "0.9.6"
 maplit          = { workspace = true }
 rand            = { workspace = true }
 serde           = { workspace = true, optional = true }

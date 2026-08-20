@@ -85,7 +85,6 @@ use crate::replication::ReplicationHandle;
 use crate::replication::ReplicationSessionId;
 use crate::runtime::RaftRuntime;
 use crate::storage::LogFlushed;
-use crate::storage::RaftLogReaderExt;
 use crate::storage::RaftLogStorage;
 use crate::storage::RaftStateMachine;
 use crate::type_config::alias::InstantOf;
@@ -739,7 +738,12 @@ where
     ) -> Result<(), StorageError<C::NodeId>> {
         tracing::debug!(upto_index = display(upto_index), "{}", func_name!());
 
-        let end = upto_index + 1;
+        let end = upto_index.checked_add(1).ok_or_else(|| {
+            StorageIOError::read_log_at_index(
+                upto_index,
+                AnyError::error("committed log index cannot be represented as an exclusive range"),
+            )
+        })?;
 
         debug_assert!(
             since <= end,
@@ -752,16 +756,69 @@ where
             return Ok(());
         }
 
-        let entries = self.log_store.get_log_entries(since..end).await?;
-        tracing::debug!(
-            entries = display(DisplaySlice::<_>(entries.as_slice())),
-            "about to apply"
-        );
+        // `limited_get_log_entries()` allows the store to cap one read without violating the
+        // `try_get_log_entries()` contract. Wait for each state-machine chunk before fetching the
+        // next one: otherwise a large committed gap is merely moved into the worker's unbounded
+        // command queue.
+        let mut next = since;
+        while next < end {
+            let entries = self.log_store.limited_get_log_entries(next, end).await?;
+            let first = entries.first().map(|entry| entry.get_log_id().index);
+            let last = entries.last().map(|entry| entry.get_log_id().index);
+            if first != Some(next)
+                || last.is_none()
+                || entries
+                    .iter()
+                    .enumerate()
+                    .any(|(offset, entry)| entry.get_log_id().index != next.saturating_add(offset as u64))
+            {
+                return Err(StorageIOError::read_log_at_index(
+                    next,
+                    AnyError::error(format!(
+                        "limited log read returned a non-contiguous range: expected start {}, got [{:?}, {:?}]",
+                        next, first, last
+                    )),
+                )
+                .into());
+            }
+            let last_applied = entries.last().expect("validated non-empty entries").get_log_id().clone();
+            if last_applied.index >= end {
+                return Err(StorageIOError::read_log_at_index(
+                    last_applied.index,
+                    AnyError::error(format!(
+                        "limited log read exceeded requested end {} with index {}",
+                        end, last_applied.index
+                    )),
+                )
+                .into());
+            }
 
-        let last_applied = entries[entries.len() - 1].get_log_id().clone();
+            tracing::debug!(
+                entries = display(DisplaySlice::<_>(entries.as_slice())),
+                "about to apply bounded chunk"
+            );
 
-        let cmd = sm::Command::apply(entries).with_seq(seq);
-        self.sm_handle.send(cmd).map_err(|e| StorageIOError::apply(last_applied, AnyError::error(e)))?;
+            let (tx, rx) = C::AsyncRuntime::oneshot();
+            let cmd = sm::Command::apply_with_callback(entries, tx);
+            self.sm_handle
+                .send(cmd)
+                .map_err(|e| StorageIOError::apply(last_applied.clone(), AnyError::error(e)))?;
+            let apply_result =
+                rx.await.map_err(|e| StorageIOError::apply(last_applied.clone(), AnyError::error(e)))??;
+
+            self.engine.state.io_state_mut().update_applied(Some(apply_result.last_applied.clone()));
+            self.handle_apply_result(apply_result);
+            next = last_applied.index.checked_add(1).ok_or_else(|| {
+                StorageIOError::read_log_at_index(
+                    last_applied.index,
+                    AnyError::error("applied log index cannot be advanced"),
+                )
+            })?;
+        }
+
+        // A chunked apply has no state-machine notification. Publish completion only after the
+        // final chunk, preserving command-order conditions for subsequent engine commands.
+        self.command_state.finished_sm_seq = seq;
 
         Ok(())
     }

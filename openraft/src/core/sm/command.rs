@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 
 use crate::core::raft_msg::ResultSender;
+use crate::core::ApplyResult;
 use crate::display_ext::DisplaySlice;
 use crate::error::Infallible;
 use crate::log_id::RaftLogId;
@@ -40,13 +41,14 @@ where C: RaftTypeConfig
         self.seq
     }
 
-    pub(crate) fn with_seq(mut self, seq: CommandSeq) -> Self {
-        self.seq = seq;
-        self
-    }
-
     pub(crate) fn set_seq(&mut self, seq: CommandSeq) {
         self.seq = seq;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_seq(mut self, seq: CommandSeq) -> Self {
+        self.set_seq(seq);
+        self
     }
 
     pub(crate) fn build_snapshot() -> Self {
@@ -69,8 +71,20 @@ where C: RaftTypeConfig
         Command::new(payload)
     }
 
-    pub(crate) fn apply(entries: Vec<C::Entry>) -> Self {
-        let payload = CommandPayload::Apply { entries };
+    /// Apply one bounded chunk and return its result directly to RaftCore.
+    ///
+    /// Unlike the normal notification path, this lets RaftCore wait for each chunk before it
+    /// reads the next one from the log store. This keeps a large committed gap bounded by the
+    /// log reader's `limited_get_log_entries()` contract instead of filling the unbounded state
+    /// machine command channel.
+    pub(crate) fn apply_with_callback(
+        entries: Vec<C::Entry>,
+        callback: ResultSender<C, ApplyResult<C>, crate::StorageError<C::NodeId>>,
+    ) -> Self {
+        let payload = CommandPayload::Apply {
+            entries,
+            callback: Some(callback),
+        };
         Command::new(payload)
     }
 }
@@ -105,6 +119,7 @@ where C: RaftTypeConfig
     /// Apply the log entries to the state machine.
     Apply {
         entries: Vec<C::Entry>,
+        callback: Option<ResultSender<C, ApplyResult<C>, crate::StorageError<C::NodeId>>>,
     },
 }
 
@@ -121,7 +136,7 @@ where C: RaftTypeConfig
             CommandPayload::BeginReceivingSnapshot { .. } => {
                 write!(f, "BeginReceivingSnapshot")
             }
-            CommandPayload::Apply { entries } => write!(f, "Apply: {}", DisplaySlice::<_>(entries)),
+            CommandPayload::Apply { entries, .. } => write!(f, "Apply: {}", DisplaySlice::<_>(entries)),
         }
     }
 }
@@ -139,7 +154,7 @@ where C: RaftTypeConfig
                 CommandPayload::InstallFullSnapshot { snapshot: s1 },
                 CommandPayload::InstallFullSnapshot { snapshot: s2 },
             ) => s1.meta == s2.meta,
-            (CommandPayload::Apply { entries: entries1 }, CommandPayload::Apply { entries: entries2 }) => {
+            (CommandPayload::Apply { entries: entries1, .. }, CommandPayload::Apply { entries: entries2, .. }) => {
                 // Entry may not be `Eq`, we just compare log id.
                 // This would be enough for testing.
                 entries1.iter().map(|e| e.get_log_id().clone()).collect::<Vec<_>>()
