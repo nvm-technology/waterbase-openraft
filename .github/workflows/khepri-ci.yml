@@ -21,10 +21,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          toolchain: nightly-2026-04-11
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
       - name: Lint the Khepri feature set
         run: cargo clippy -p waterbase-openraft --lib --features serde,storage-v2 -- -D warnings
       - name: Test the Khepri feature set
