@@ -1,6 +1,6 @@
 [package]
-name = "openraft"
-readme = "../README.md"
+name = "waterbase-openraft"
+readme = "README.md"
 
 version       = { workspace = true }
 edition       = { workspace = true }
@@ -12,6 +12,11 @@ homepage      = { workspace = true }
 keywords      = { workspace = true }
 license       = { workspace = true }
 repository    = { workspace = true }
+
+[lib]
+# Keep `use openraft::...` stable for downstream applications while distributing the package under
+# Waterbase's own name.
+name = "openraft"
 
 
 [dependencies]

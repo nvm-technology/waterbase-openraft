@@ -1,46 +1,37 @@
-name: Release
+name: Verify Waterbase OpenRaft package
+
 on:
   push:
     tags:
-      - "v*"
-      - "!v*-alpha*"
-      - "!v*-beta*"
+      - "waterbase-openraft-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  publish:
+  package:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Setup | Checkout
-        uses: actions/checkout@v2
-
-      - name: Setup | Rust
-        uses: actions-rs/toolchain@v1.0.6
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
-          profile: minimal
-          override: true
-
-      - name: Publish openraft
-        run: cd openraft && cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
-
-  # release:
-  #   needs: publish
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Setup | Checkout
-  #       uses: actions/checkout@v2
-  #       with:
-  #         fetch-depth: 0
-
-  #     # save tag name in var "tag"
-  #     - name: Extract tag
-  #       id: vars
-  #       run: echo ::set-output name=tag::${GITHUB_REF#refs/*/}
-
-  #     - name: Build | Publish
-  #       uses: softprops/action-gh-release@v1
-  #       with:
-  #         body_path: change-log/${{ steps.vars.outputs.tag }}.md
-  #         draft: true
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#waterbase-openraft-v}"
+          actual="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "waterbase-openraft") | .version')"
+          test "$actual" = "$expected"
+      - name: Format and lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy -p waterbase-openraft --lib --features serde,storage-v2 -- -D warnings
+      - name: Test Khepri feature set
+        run: cargo test -p waterbase-openraft --lib --features serde,storage-v2
+      - name: Construct package without publishing
+        run: cargo package -p waterbase-openraft --locked

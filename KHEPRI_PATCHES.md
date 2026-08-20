@@ -2,6 +2,9 @@
 
 Base: upstream `databendlabs/openraft` `v0.9.25` (`8815cdba2826f74e848acef361ad03f93bb1c3f8`).
 
+This repository distributes the patched crate as `waterbase-openraft` version `1.0.0`. It is an
+internal Git dependency and is intentionally not published to crates.io.
+
 ## Bounded committed apply
 
 Upstream `RaftCore::apply_to_state_machine()` reads a complete committed gap before submitting it

@@ -1,0 +1,33 @@
+name: Waterbase OpenRaft CI
+
+on:
+  push:
+    branches: [release/v0.9.25-khepri]
+  pull_request:
+    branches: [release/v0.9.25-khepri]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: waterbase-openraft-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test package 1.0.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint the Khepri feature set
+        run: cargo clippy -p waterbase-openraft --lib --features serde,storage-v2 -- -D warnings
+      - name: Test the Khepri feature set
+        run: cargo test -p waterbase-openraft --lib --features serde,storage-v2

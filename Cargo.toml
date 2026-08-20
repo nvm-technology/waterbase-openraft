@@ -1,17 +1,17 @@
 [workspace.package]
-version = "0.9.25"
+version = "1.0.0"
 edition = "2021"
 authors = [
     "Databend Authors <opensource@datafuselabs.com>",
     "Anthony Dodd <Dodd.AnthonyJosiah@gmail.com>",
 ]
 categories = ["algorithms", "asynchronous", "data-structures"]
-description = "Advanced Raft consensus"
+description = "Advanced Raft consensus, maintained as a Khepri distribution"
 documentation = "https://docs.rs/openraft"
-homepage = "https://github.com/datafuselabs/openraft"
+homepage = "https://github.com/nvm-technology/waterbase-openraft"
 keywords = ["raft", "consensus"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/datafuselabs/openraft"
+repository = "https://github.com/nvm-technology/waterbase-openraft"
 
 
 [workspace.dependencies]

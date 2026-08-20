@@ -16,7 +16,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/datafuselabs/openraft"
 
 [dependencies]
-openraft = { path = "../../openraft", features = [
+openraft = { package = "waterbase-openraft", path = "../../openraft", version = "=1.0.0", features = [
     "serde",
     "singlethreaded",
     "storage-v2",
