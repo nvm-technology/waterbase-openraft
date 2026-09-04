@@ -1,7 +1,6 @@
 //! Raft runtime configuration.
 
 use std::ops::Deref;
-use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -38,7 +37,9 @@ pub enum SnapshotPolicy {
 
 impl SnapshotPolicy {
     pub(crate) fn should_snapshot<NID>(&self, state: &impl Deref<Target = impl LogStateReader<NID>>) -> bool
-    where NID: NodeId {
+    where
+        NID: NodeId,
+    {
         match self {
             SnapshotPolicy::LogsSinceLast(threshold) => {
                 state.committed().next_index() >= state.snapshot_last_log_id().next_index() + threshold
@@ -48,14 +49,111 @@ impl SnapshotPolicy {
     }
 }
 
-/// Parse number with unit such as 5.3 KB
+/// Parse a byte size without pulling a decimal/archive dependency into the Raft core.
+///
+/// The old `byte-unit` dependency was only used by this private CLI parser and brought an
+/// optional `rust_decimal -> rkyv 0.7` chain into every downstream application. Keep the accepted
+/// human-readable forms (`204`, `3MiB`, `50.84 MB`, and bit suffixes) while doing the conversion
+/// with checked integer arithmetic.
 fn parse_bytes_with_unit(src: &str) -> Result<u64, ConfigError> {
-    let res = byte_unit::Byte::from_str(src).map_err(|e| ConfigError::InvalidNumber {
+    let value = src.trim();
+    let split_at = value.find(|character: char| !character.is_ascii_digit() && character != '.').unwrap_or(value.len());
+    let (number, unit) = value.split_at(split_at);
+    if number.is_empty() || number == "." || number.matches('.').count() > 1 {
+        return Err(ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: "expected a non-negative number with an optional unit".to_string(),
+        });
+    }
+
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    if whole.is_empty() && fraction.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: "expected a non-negative decimal number".to_string(),
+        });
+    }
+    let scale = 10u128.checked_pow(u32::try_from(fraction.len()).unwrap_or(u32::MAX));
+    let scale = scale.ok_or_else(|| ConfigError::InvalidNumber {
         invalid: src.to_string(),
-        reason: e.to_string(),
+        reason: "number has too many fractional digits".to_string(),
+    })?;
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u128>().map_err(|error| ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: error.to_string(),
+        })?
+    };
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u128>().map_err(|error| ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: error.to_string(),
+        })?
+    };
+    let mantissa = whole.checked_mul(scale).and_then(|value| value.checked_add(fraction)).ok_or_else(|| {
+        ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: "number is too large".to_string(),
+        }
     })?;
 
-    Ok(res.as_u64())
+    let unit = unit.trim();
+    let (unit_name, is_bit) = if unit.len() >= 3 && unit[unit.len() - 3..].eq_ignore_ascii_case("bit") {
+        (&unit[..unit.len() - 3], true)
+    } else if let Some(prefix) = unit.strip_suffix('B') {
+        (prefix, false)
+    } else if let Some(prefix) = unit.strip_suffix('b') {
+        (prefix, true)
+    } else {
+        (unit, false)
+    };
+    let multiplier = match unit_name.to_ascii_lowercase().as_str() {
+        "" => 1,
+        "k" => 1_000,
+        "m" => 1_000_000,
+        "g" => 1_000_000_000,
+        "t" => 1_000_000_000_000,
+        "p" => 1_000_000_000_000_000,
+        "e" => 1_000_000_000_000_000_000,
+        "ki" => 1_024,
+        "mi" => 1_048_576,
+        "gi" => 1_073_741_824,
+        "ti" => 1_099_511_627_776,
+        "pi" => 1_125_899_906_842_624,
+        "ei" => 1_152_921_504_606_846_976,
+        _ => {
+            return Err(ConfigError::InvalidNumber {
+                invalid: src.to_string(),
+                reason: "unknown byte unit".to_string(),
+            });
+        }
+    };
+    let numerator = mantissa.checked_mul(multiplier).ok_or_else(|| ConfigError::InvalidNumber {
+        invalid: src.to_string(),
+        reason: "byte size is too large".to_string(),
+    })?;
+    let divisor = if is_bit { scale.checked_mul(8) } else { Some(scale) };
+    let divisor = divisor.ok_or_else(|| ConfigError::InvalidNumber {
+        invalid: src.to_string(),
+        reason: "byte size is too large".to_string(),
+    })?;
+    let rounded = numerator.checked_add(divisor - 1).and_then(|value| value.checked_div(divisor)).ok_or_else(|| {
+        ConfigError::InvalidNumber {
+            invalid: src.to_string(),
+            reason: "byte size is too large".to_string(),
+        }
+    })?;
+    u64::try_from(rounded).map_err(|error| ConfigError::InvalidNumber {
+        invalid: src.to_string(),
+        reason: error.to_string(),
+    })
 }
 
 fn parse_snapshot_policy(src: &str) -> Result<SnapshotPolicy, ConfigError> {

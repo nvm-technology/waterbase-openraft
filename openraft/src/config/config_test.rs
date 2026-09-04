@@ -20,6 +20,31 @@ fn test_config_defaults() {
 }
 
 #[test]
+fn test_snapshot_chunk_size_accepts_common_byte_units_without_decimal_dependency() -> anyhow::Result<()> {
+    let config = Config::build(&["foo", "--snapshot-max-chunk-size=3MiB"])?;
+    assert_eq!(3 * 1024 * 1024, config.snapshot_max_chunk_size);
+
+    let config = Config::build(&["foo", "--snapshot-max-chunk-size=50.84 MB"])?;
+    assert_eq!(50_840_000, config.snapshot_max_chunk_size);
+
+    let config = Config::build(&["foo", "--snapshot-max-chunk-size=9bit"])?;
+    assert_eq!(2, config.snapshot_max_chunk_size);
+
+    let config = Config::build(&["foo", "--snapshot-max-chunk-size=1KB"])?;
+    assert_eq!(1_000, config.snapshot_max_chunk_size);
+
+    let config = Config::build(&["foo", "--snapshot-max-chunk-size=1kb"])?;
+    assert_eq!(125, config.snapshot_max_chunk_size);
+    Ok(())
+}
+
+#[test]
+fn test_snapshot_chunk_size_rejects_unknown_or_overflowing_units() {
+    assert!(Config::build(&["foo", "--snapshot-max-chunk-size=2XB"]).is_err());
+    assert!(Config::build(&["foo", "--snapshot-max-chunk-size=18446744073709551616B"]).is_err());
+}
+
+#[test]
 fn test_invalid_election_timeout_config_produces_expected_error() {
     let config = Config {
         election_timeout_min: 1000,
@@ -40,10 +65,13 @@ fn test_invalid_election_timeout_config_produces_expected_error() {
 
     let res = config.validate();
     let err = res.unwrap_err();
-    assert_eq!(err, ConfigError::ElectionTimeoutLTHeartBeat {
-        election_timeout_min: 1000,
-        heartbeat_interval: 1500
-    });
+    assert_eq!(
+        err,
+        ConfigError::ElectionTimeoutLTHeartBeat {
+            election_timeout_min: 1000,
+            heartbeat_interval: 1500
+        }
+    );
 }
 
 #[test]
